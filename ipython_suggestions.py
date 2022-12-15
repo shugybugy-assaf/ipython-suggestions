@@ -307,9 +307,6 @@ def inspect_all_objs():
                 path = '.'
 
             if os.path.isdir(path):
-                import time
-                with open('/tmp/suggestions.log', "a+") as fout:
-                    fout.write(f"{int(time.time())}: {path}\n")
                 for root, dirs, nondirs in os.walk(path):
                     if '-' in root[len(path) + 1:] or root in visited:
                         dirs[:] = []
