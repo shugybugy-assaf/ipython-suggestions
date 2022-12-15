@@ -236,16 +236,59 @@ def unload_ipython_extension(ipython):
     _symbols_last = None
     ipython.set_custom_exc((), None)
 
+defclass = re.compile(r'(class|def) ([_A-z][_A-z0-9]*)[\(:]')
+variable = re.compile(r'([A-z][_A-z0-9]+)\s=')
+
+def cached_parse_file(filepath, modulepath, name):
+    cache_key = (filepath, modulepath, name)
+    file_stats = os.stat(filepath)
+    if cache_key in _global_foo_cache:
+        st_ctime, st_size, data = _global_foo_cache[cache_key]
+        if file_stats.st_ctime == st_ctime and file_stats.st_size == st_size:
+            return data
+
+    objs = defaultdict(dict)
+    # Notice that we stat() the file BEFORE parsing it, so we are safe from a race condition
+    with open(filepath, 'r') as f:
+        for i, line in enumerate(f):
+            if modulepath:
+                fullpath = '%s.%s' % (modulepath, name)
+            else:
+                fullpath = name
+
+            m = defclass.match(line)
+            if m:
+                t, sym = m.groups()
+                objs[sym][(t, fullpath)] = (filepath, i)
+            else:
+                m = variable.match(line)
+                if m:
+                    objs[m.group(1)][('var', fullpath)] = (
+                        filepath, i)
+    if file_stats.st_size > 0:
+        _global_foo_cache[cache_key] = file_stats.st_ctime, file_stats.st_size, objs
+    return objs
+
 
 def inspect_all_objs():
+    global _global_foo_cache
+    _cache_file = os.path.expanduser("~/.ipython_suggestions_cache.pkl")
+    try:
+        import pickle
+        with open(_cache_file, "rb") as fin:
+            # separate read() from load() to minimize the probability of a race-condition
+            _dumps = fin.read()
+        _global_foo_cache = pickle.loads(_dumps)
+    except:
+        _global_foo_cache = {}
+
     global _symbols_cache, _symbols_sorted, _symbols_running, _symbols_error
 
     _symbols_running = True
 
     try:
         visited = set()
-        defclass = re.compile(r'(class|def) ([_A-z][_A-z0-9]*)[\(:]')
-        variable = re.compile(r'([A-z][_A-z0-9]+)\s=')
+
         objs = defaultdict(dict)
 
         rootmodules = list(sys.builtin_module_names)
@@ -264,6 +307,9 @@ def inspect_all_objs():
                 path = '.'
 
             if os.path.isdir(path):
+                import time
+                with open('/tmp/suggestions.log', "a+") as fout:
+                    fout.write(f"{int(time.time())}: {path}\n")
                 for root, dirs, nondirs in os.walk(path):
                     if '-' in root[len(path) + 1:] or root in visited:
                         dirs[:] = []
@@ -289,22 +335,9 @@ def inspect_all_objs():
                                 objs[name][('module', modulepath)] = (filepath, 0)
 
                                 try:
-                                    with open(filepath, 'r') as f:
-                                        for i, line in enumerate(f):
-                                            if modulepath:
-                                                fullpath = '%s.%s' % (modulepath, name)
-                                            else:
-                                                fullpath = name
-
-                                            m = defclass.match(line)
-                                            if m:
-                                                t, sym = m.groups()
-                                                objs[sym][(t, fullpath)] = (filepath, i)
-                                            else:
-                                                m = variable.match(line)
-                                                if m:
-                                                    objs[m.group(1)][('var', fullpath)] = (
-                                                        filepath, i)
+                                    new_objs = cached_parse_file(filepath, modulepath, name)
+                                    for key, d in new_objs.items():
+                                        objs[key].update(d)
                                 except:
                                     pass
 
@@ -312,6 +345,14 @@ def inspect_all_objs():
             _symbols_cache[len(word)][word] = value
 
         _symbols_sorted = sorted(sum(map(list, _symbols_cache.values()), []))
+        try:
+            import pickle
+            _dumps = pickle.dumps(_global_foo_cache)
+            with open(_cache_file, "wb") as fout:
+                # separate write() from dump() to minimize the probability of a race-condition
+                fout.write(_dumps)
+        except:
+            pass
     except:
         _symbols_error = True
     finally:
